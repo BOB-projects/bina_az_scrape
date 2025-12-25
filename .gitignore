@@ -26,6 +26,15 @@ share/python-wheels/
 *.egg
 MANIFEST
 .ipynb_checkpoints
+
+# Data files (large CSVs, backups)
+*.csv
+*.xlsx
+*.json
+data/
+data_backup/
+*.zip
+*.log
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
