@@ -42,29 +42,30 @@ except ImportError:
 
 
 def extract_category_from_html(html: str) -> Optional[str]:
-    """Extract category from detail page HTML - looks for 'Kateqoriya' field"""
+    """Extract category from detail page HTML - ONLY looks for 'Kateqoriya' field
+    
+    Returns specific property categories like:
+    - 'Yeni tikili' (New building)
+    - 'Köhnə tikili' (Old building)
+    - 'Apartament'
+    - etc.
+    
+    Returns None if Kateqoriya field is not found (no generic fallback).
+    """
     import re
     
-    # Look for the two main categories first: Yeni tikili or Köhnə tikili
-    # Pattern 1: Direct text search (most reliable)
-    if 'Yeni tikili' in html:
-        return 'Yeni tikili'
-    elif 'Köhnə tikili' in html:
-        return 'Köhnə tikili'
-    
-    # Pattern 2: Look for "Kateqoriya" label followed by the value (capture any category)
-    kateqoriya_match = re.search(r'Kateqoriya["\']?\s*(?:</?\w+[^>]*>)*\s*([^<>\n]+?)(?:</|$)', html, re.IGNORECASE)
+    # ONLY extract from the specific Kateqoriya product property
+    # This captures categories like "Yeni tikili", "İşlənmiş", "Apartament", etc.
+    kateqoriya_match = re.search(
+        r'<label class="product-properties__i-name">Kateqoriya</label>\s*<span class="product-properties__i-value">([^<]+)</span>',
+        html
+    )
     if kateqoriya_match:
         category = kateqoriya_match.group(1).strip()
-        if category and len(category) < 100:  # Sanity check
+        if category and len(category) < 100:
             return category
     
-    # Pattern 3: Look in data attributes or JSON
-    data_match = re.search(r'"category"\s*:\s*"([^"]+)"', html)
-    if data_match:
-        return data_match.group(1)
-    
-    return None  # Return None if not found
+    return None  # Return None if Kateqoriya not found (no fallback)
 
 
 class BinaRentScraper:
@@ -452,7 +453,7 @@ class BinaRentScraper:
 
     def save_to_json(self, filename: str = None):
         if filename is None:
-            filename = f"bina_rent_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            filename = f"bina_rent_{datetime.now().strftime('%Y%m')}.json"
         filepath = self.output_dir / filename
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(self.all_items, f, ensure_ascii=False, indent=2)
@@ -462,7 +463,7 @@ class BinaRentScraper:
     def save_to_csv(self, filename: str = None):
         if not self.all_items: return None
         if filename is None:
-            filename = f"bina_rent_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            filename = f"bina_rent_{datetime.now().strftime('%Y%m')}.csv"
         filepath = self.output_dir / filename
         fieldnames = list(self.all_items[0].keys())
         with open(filepath, 'w', newline='', encoding='utf-8') as f:
@@ -483,7 +484,7 @@ class BinaRentScraper:
             return None
 
         if filename is None:
-            filename = f"bina_rent_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            filename = f"bina_rent_{datetime.now().strftime('%Y%m')}.xlsx"
 
         filepath = self.output_dir / filename
 

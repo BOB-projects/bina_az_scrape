@@ -8,30 +8,30 @@ from typing import Optional
 
 
 def extract_category_from_html(html: str) -> Optional[str]:
-    """Extract category from detail page HTML - looks for 'Kateqoriya' field
+    """Extract category from detail page HTML - ONLY looks for 'Kateqoriya' field
     
-    Returns one of:
+    Returns specific property categories like:
     - 'Yeni tikili' (New building)
     - 'Köhnə tikili' (Old building)
-    - Any other category found (e.g., 'Obyekt')
-    - None if no category found
-    """
-    # Pattern 1: Direct text search (most reliable)
-    if 'Yeni tikili' in html:
-        return 'Yeni tikili'
-    elif 'Köhnə tikili' in html:
-        return 'Köhnə tikili'
+    - 'Apartament'
+    - 'Ofis'
+    - 'Qaraj'
+    - 'Torpaq'
+    - 'Həyət evi'
+    - etc.
     
-    # Pattern 2: Look for "Kateqoriya" label followed by the value (capture any category)
-    kateqoriya_match = re.search(r'Kateqoriya["\']?\s*(?:</?\w+[^>]*>)*\s*([^<>\n]+?)(?:</|$)', html, re.IGNORECASE)
+    Returns None if Kateqoriya field is not found (no generic/fallback categories).
+    """
+    
+    # ONLY extract from the specific Kateqoriya product property
+    # This captures specific categories like "Yeni tikili", "İşlənmiş", etc.
+    kateqoriya_match = re.search(
+        r'<label class="product-properties__i-name">Kateqoriya</label>\s*<span class="product-properties__i-value">([^<]+)</span>',
+        html
+    )
     if kateqoriya_match:
         category = kateqoriya_match.group(1).strip()
-        if category and len(category) < 100:  # Sanity check
+        if category and len(category) < 100:
             return category
     
-    # Pattern 3: Look in data attributes or JSON
-    data_match = re.search(r'"category"\s*:\s*"([^"]+)"', html)
-    if data_match:
-        return data_match.group(1)
-    
-    return None
+    return None  # Return None if Kateqoriya not found (no fallback)

@@ -591,7 +591,7 @@ class BinaScraper:
     def save_to_json(self, filename: str = None):
         """Save data to JSON file"""
         if filename is None:
-            filename = f"bina_sale_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            filename = f"bina_sale_{datetime.now().strftime('%Y%m')}.json"
 
         filepath = self.output_dir / filename
 
@@ -608,7 +608,7 @@ class BinaScraper:
             return
 
         if filename is None:
-            filename = f"bina_sale_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            filename = f"bina_sale_{datetime.now().strftime('%Y%m')}.csv"
 
         filepath = self.output_dir / filename
 
@@ -634,7 +634,7 @@ class BinaScraper:
             return None
 
         if filename is None:
-            filename = f"bina_sale_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            filename = f"bina_sale_{datetime.now().strftime('%Y%m')}.xlsx"
 
         filepath = self.output_dir / filename
 
