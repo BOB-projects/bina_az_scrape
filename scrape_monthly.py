@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from rent import BinaRentScraper
 from sale import BinaScraper
+from scraper_utils import get_cloudflare_session
 
 
 async def main():
@@ -27,13 +28,18 @@ async def main():
     print(f"  - bina_rent_{current_month}.xlsx")
     print("\n" + "=" * 80)
     
+    # Get Cloudflare Session (Interactive)
+    cookies, user_agent = await get_cloudflare_session()
+    if not cookies:
+        print("⚠️ Warning: Could not get Cloudflare session. Scraper may fail with 403.")
+
     # Scrape both
     scraped_items = 0
     
     # Scrape SALE
     print("\n🔄 Scraping SALE properties...")
     try:
-        async with BinaScraper() as scraper:
+        async with BinaScraper(cookies=cookies, user_agent=user_agent) as scraper:
             items = await scraper.scrape_all()
             if items:
                 scraper.save_to_csv(f"bina_sale_{current_month}.csv")
@@ -46,7 +52,7 @@ async def main():
     # Scrape RENT
     print("\n🔄 Scraping RENT properties...")
     try:
-        async with BinaRentScraper() as scraper:
+        async with BinaRentScraper(cookies=cookies, user_agent=user_agent) as scraper:
             items = await scraper.scrape_all()
             if items:
                 scraper.save_to_csv(f"bina_rent_{current_month}.csv")

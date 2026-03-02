@@ -29,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import shared utilities
-from scraper_utils import extract_category_from_html
+from scraper_utils import extract_category_from_html, get_cloudflare_session
 
 # Try to import openpyxl for Excel support
 try:
@@ -85,10 +85,12 @@ class BinaRentScraper:
     CHECKPOINT_INTERVAL = 50  # Save checkpoint every N pages
     INCREMENTAL_SAVE_INTERVAL = 100  # Save data every N pages
 
-    def __init__(self, output_dir: str = "data/rent", resume: bool = True):
+    def __init__(self, output_dir: str = "data/rent", resume: bool = True, cookies: Dict = None, user_agent: str = None):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.session: Optional[aiohttp.ClientSession] = None
+        self.cookies = cookies or {}
+        self.user_agent = user_agent
         self.all_items: List[Dict] = []
         self.seen_ids: set = set()  # Track IDs for deduplication
         self.semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_REQUESTS)
@@ -105,18 +107,23 @@ class BinaRentScraper:
     async def __aenter__(self):
         """Async context manager entry"""
         connector = aiohttp.TCPConnector(ssl=False)
+        
+        headers = {
+            'User-Agent': self.user_agent or 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'az,en-US;q=0.9,en;q=0.8,ru;q=0.7',
+            'Content-Type': 'application/json',
+            'Referer': 'https://bina.az/kiraye',
+            'Origin': 'https://bina.az',
+        }
+        
         self.session = aiohttp.ClientSession(
             connector=connector,
-            headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8,ru;q=0.7,az;q=0.6',
-                'Content-Type': 'application/json',
-                'Referer': 'https://bina.az/kiraye',
-                'Origin': 'https://bina.az',
-            },
-            timeout=aiohttp.ClientTimeout(total=30)
+            headers=headers,
+            cookies=self.cookies,
+            timeout=aiohttp.ClientTimeout(total=45)
         )
+        return self
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -331,14 +338,65 @@ class BinaRentScraper:
             logger.info(f"Speed:           {pages_per_minute:.1f} pages/min | {items_per_minute:.1f} items/min")
             logger.info("=" * 80)
 
+    async def update_session(self, cookies, user_agent):
+        """Update aiohttp session with new Cloudflare cookies/UA"""
+        if self.session:
+            await self.session.close()
+            
+        self.cookies = cookies
+        self.user_agent = user_agent
+        
+        connector = aiohttp.TCPConnector(ssl=False)
+        headers = {
+            'User-Agent': self.user_agent,
+            'Accept': '*/*',
+            'Accept-Language': 'az,en-US;q=0.9,en;q=0.8,ru;q=0.7',
+            'Content-Type': 'application/json',
+            'Referer': 'https://bina.az/kiraye',
+            'Origin': 'https://bina.az',
+        }
+        
+        self.session = aiohttp.ClientSession(
+            connector=connector,
+            headers=headers,
+            cookies=self.cookies,
+            timeout=aiohttp.ClientTimeout(total=45)
+        )
+        logger.info("Session updated successfully with new Cloudflare tokens")
+
     async def fetch_page(self, cursor: Optional[str] = None, attempt: int = 1) -> Optional[Dict]:
-        """Fetch a single page of results with retry logic"""
+        """Fetch a single page of results with retry logic and Cloudflare bypass"""
         async with self.semaphore:
             url = self.build_url(cursor)
             try:
+                # Need to check self.session as it might be recreated during update_session
+                if self.session is None or self.session.closed:
+                     await self.update_session(self.cookies, self.user_agent)
+
                 async with self.session.get(url) as response:
                     if response.status == 200:
                         return await response.json()
+                    
+                    elif response.status == 403:
+                        logger.warning(f"Cloudflare block detected (403). Launching re-auth...")
+                        # Get new session
+                        try:
+                            # Import here to avoid circular dependencies if any
+                            from scraper_utils import get_cloudflare_session
+                            new_cookies, new_ua = await get_cloudflare_session()
+                            if new_cookies:
+                                await self.update_session(new_cookies, new_ua)
+                                # Decrease failure count as this was a block, not a network error
+                                # Retry immediately with new session
+                                if attempt < self.RETRY_ATTEMPTS:
+                                    return await self.fetch_page(cursor, attempt) # Don't increment attempt
+                            else:
+                                logger.error("Bypass failed or cancelled.")
+                        except Exception as e:
+                            logger.error(f"Error during re-auth: {e}")
+                        
+                        return None
+
                     elif attempt < self.RETRY_ATTEMPTS:
                         await asyncio.sleep(self.RETRY_DELAY * attempt)
                         return await self.fetch_page(cursor, attempt + 1)
@@ -348,6 +406,7 @@ class BinaRentScraper:
                     await asyncio.sleep(self.RETRY_DELAY * attempt)
                     return await self.fetch_page(cursor, attempt + 1)
                 return None
+
 
     async def fetch_item_category(self, item_path: str) -> Optional[str]:
         """Fetch and extract category from item detail page"""
