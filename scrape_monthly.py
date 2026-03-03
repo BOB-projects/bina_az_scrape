@@ -16,18 +16,20 @@ from scraper_utils import get_cloudflare_session
 async def main():
     """Scrape current month data"""
     # Get current month in YYYYMM format
-    current_month = datetime.now().strftime('%Y%m')
-    
+    current_month = datetime.now().strftime("%Y%m")
+
     print("\n" + "=" * 80)
     print(f"BINA.AZ MONTHLY SCRAPER - {datetime.now().strftime('%B %Y')}")
     print("=" * 80)
     print(f"\nFiles will be saved as:")
     print(f"  - bina_sale_{current_month}.csv")
     print(f"  - bina_sale_{current_month}.xlsx")
+    print(f"  - bina_sale_{current_month}.parquet")
     print(f"  - bina_rent_{current_month}.csv")
     print(f"  - bina_rent_{current_month}.xlsx")
+    print(f"  - bina_rent_{current_month}.parquet")
     print("\n" + "=" * 80)
-    
+
     # Get Cloudflare Session (Interactive)
     cookies, user_agent = await get_cloudflare_session()
     if not cookies:
@@ -35,7 +37,7 @@ async def main():
 
     # Scrape both
     scraped_items = 0
-    
+
     # Scrape SALE
     print("\n🔄 Scraping SALE properties...")
     try:
@@ -44,11 +46,12 @@ async def main():
             if items:
                 scraper.save_to_csv(f"bina_sale_{current_month}.csv")
                 scraper.save_to_xlsx(f"bina_sale_{current_month}.xlsx")
+                scraper.save_to_parquet(f"bina_sale_{current_month}.parquet")
                 print(f"✓ Saved: {len(items)} sale properties")
                 scraped_items += len(items)
     except Exception as e:
         print(f"✗ Error scraping sales: {e}")
-    
+
     # Scrape RENT
     print("\n🔄 Scraping RENT properties...")
     try:
@@ -57,11 +60,12 @@ async def main():
             if items:
                 scraper.save_to_csv(f"bina_rent_{current_month}.csv")
                 scraper.save_to_xlsx(f"bina_rent_{current_month}.xlsx")
+                scraper.save_to_parquet(f"bina_rent_{current_month}.parquet")
                 print(f"✓ Saved: {len(items)} rent properties")
                 scraped_items += len(items)
     except Exception as e:
         print(f"✗ Error scraping rentals: {e}")
-    
+
     print("\n" + "=" * 80)
     print(f"✓ Scraping complete! Total items: {scraped_items:,}")
     print("=" * 80 + "\n")

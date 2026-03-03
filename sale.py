@@ -16,15 +16,16 @@ import sys
 from pathlib import Path
 import time
 import re
+import pandas as pd
 
 # Configure logging first
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler('scraper.log', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
+        logging.FileHandler("scraper.log", encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
+    ],
 )
 logger = logging.getLogger(__name__)
 
@@ -35,35 +36,42 @@ from scraper_utils import extract_category_from_html, get_cloudflare_session
 try:
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, PatternFill
+
     XLSX_AVAILABLE = True
 except ImportError:
     XLSX_AVAILABLE = False
-    logger.warning("openpyxl not installed. XLSX export will not be available. Install with: pip install openpyxl")
+    logger.warning(
+        "openpyxl not installed. XLSX export will not be available. Install with: pip install openpyxl"
+    )
 
 
 def extract_category_from_html(html: str) -> Optional[str]:
     """Extract category from detail page HTML - looks for 'Kateqoriya' field"""
     import re
-    
+
     # Look for the two main categories first: Yeni tikili or Köhnə tikili
     # Pattern 1: Direct text search (most reliable)
-    if 'Yeni tikili' in html:
-        return 'Yeni tikili'
-    elif 'Köhnə tikili' in html:
-        return 'Köhnə tikili'
-    
+    if "Yeni tikili" in html:
+        return "Yeni tikili"
+    elif "Köhnə tikili" in html:
+        return "Köhnə tikili"
+
     # Pattern 2: Look for "Kateqoriya" label followed by the value (capture any category)
-    kateqoriya_match = re.search(r'Kateqoriya["\']?\s*(?:</?\w+[^>]*>)*\s*([^<>\n]+?)(?:</|$)', html, re.IGNORECASE)
+    kateqoriya_match = re.search(
+        r'Kateqoriya["\']?\s*(?:</?\w+[^>]*>)*\s*([^<>\n]+?)(?:</|$)',
+        html,
+        re.IGNORECASE,
+    )
     if kateqoriya_match:
         category = kateqoriya_match.group(1).strip()
         if category and len(category) < 100:  # Sanity check
             return category
-    
+
     # Pattern 3: Look in data attributes or JSON
     data_match = re.search(r'"category"\s*:\s*"([^"]+)"', html)
     if data_match:
         return data_match.group(1)
-    
+
     return None  # Return None if not found
 
 
@@ -84,7 +92,13 @@ class BinaScraper:
     CHECKPOINT_INTERVAL = 50  # Save checkpoint every N pages
     INCREMENTAL_SAVE_INTERVAL = 100  # Save data every N pages
 
-    def __init__(self, output_dir: str = "data", resume: bool = True, cookies: Dict = None, user_agent: str = None):
+    def __init__(
+        self,
+        output_dir: str = "data",
+        resume: bool = True,
+        cookies: Dict = None,
+        user_agent: str = None,
+    ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
         self.session: Optional[aiohttp.ClientSession] = None
@@ -106,21 +120,22 @@ class BinaScraper:
     async def __aenter__(self):
         """Async context manager entry"""
         connector = aiohttp.TCPConnector(ssl=False)
-        
+
         headers = {
-            'User-Agent': self.user_agent or 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'Accept': '*/*',
-            'Accept-Language': 'az,en-US;q=0.9,en;q=0.8,ru;q=0.7',
-            'Content-Type': 'application/json',
-            'Referer': 'https://bina.az/alqi-satqi',
-            'Origin': 'https://bina.az',
+            "User-Agent": self.user_agent
+            or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+            "Accept-Language": "az,en-US;q=0.9,en;q=0.8,ru;q=0.7",
+            "Content-Type": "application/json",
+            "Referer": "https://bina.az/alqi-satqi",
+            "Origin": "https://bina.az",
         }
-        
+
         self.session = aiohttp.ClientSession(
             connector=connector,
             headers=headers,
             cookies=self.cookies,
-            timeout=aiohttp.ClientTimeout(total=45)
+            timeout=aiohttp.ClientTimeout(total=45),
         )
         return self
         return self
@@ -135,7 +150,7 @@ class BinaScraper:
         variables = {
             "first": self.ITEMS_PER_PAGE,
             "filter": {"leased": False},
-            "sort": "BUMPED_AT_DESC"
+            "sort": "BUMPED_AT_DESC",
         }
 
         if cursor:
@@ -143,13 +158,11 @@ class BinaScraper:
 
         params = {
             "operationName": self.OPERATION_NAME,
-            "variables": json.dumps(variables, separators=(',', ':')),
-            "extensions": json.dumps({
-                "persistedQuery": {
-                    "version": 1,
-                    "sha256Hash": self.SHA256_HASH
-                }
-            }, separators=(',', ':'))
+            "variables": json.dumps(variables, separators=(",", ":")),
+            "extensions": json.dumps(
+                {"persistedQuery": {"version": 1, "sha256Hash": self.SHA256_HASH}},
+                separators=(",", ":"),
+            ),
         }
 
         return f"{self.BASE_URL}?{urlencode(params)}"
@@ -158,71 +171,83 @@ class BinaScraper:
         """Extract and flatten item data from node"""
         item = {
             # Basic information
-            'id': node.get('id'),
-            'area_value': node.get('area', {}).get('value') if node.get('area') else None,
-            'area_units': node.get('area', {}).get('units') if node.get('area') else None,
-            'leased': node.get('leased'),
-            'floor': node.get('floor'),
-            'floors': node.get('floors'),
-            'rooms': node.get('rooms'),
-
+            "id": node.get("id"),
+            "area_value": node.get("area", {}).get("value")
+            if node.get("area")
+            else None,
+            "area_units": node.get("area", {}).get("units")
+            if node.get("area")
+            else None,
+            "leased": node.get("leased"),
+            "floor": node.get("floor"),
+            "floors": node.get("floors"),
+            "rooms": node.get("rooms"),
             # Location information
-            'city_id': node.get('city', {}).get('id') if node.get('city') else None,
-            'city_name': node.get('city', {}).get('name') if node.get('city') else None,
-            'location_id': node.get('location', {}).get('id') if node.get('location') else None,
-            'location_name': node.get('location', {}).get('name') if node.get('location') else None,
-            'location_full_name': node.get('location', {}).get('fullName') if node.get('location') else None,
-
+            "city_id": node.get("city", {}).get("id") if node.get("city") else None,
+            "city_name": node.get("city", {}).get("name") if node.get("city") else None,
+            "location_id": node.get("location", {}).get("id")
+            if node.get("location")
+            else None,
+            "location_name": node.get("location", {}).get("name")
+            if node.get("location")
+            else None,
+            "location_full_name": node.get("location", {}).get("fullName")
+            if node.get("location")
+            else None,
             # Price information
-            'price_value': node.get('price', {}).get('value') if node.get('price') else None,
-            'price_currency': node.get('price', {}).get('currency') if node.get('price') else None,
-
+            "price_value": node.get("price", {}).get("value")
+            if node.get("price")
+            else None,
+            "price_currency": node.get("price", {}).get("currency")
+            if node.get("price")
+            else None,
             # Company/Agent information
-            'company_id': node.get('company', {}).get('id') if node.get('company') else None,
-            'company_name': node.get('company', {}).get('name') if node.get('company') else None,
-            'company_target_type': node.get('company', {}).get('targetType') if node.get('company') else None,
-
+            "company_id": node.get("company", {}).get("id")
+            if node.get("company")
+            else None,
+            "company_name": node.get("company", {}).get("name")
+            if node.get("company")
+            else None,
+            "company_target_type": node.get("company", {}).get("targetType")
+            if node.get("company")
+            else None,
             # Property features
-            'has_mortgage': node.get('hasMortgage'),
-            'has_bill_of_sale': node.get('hasBillOfSale'),
-            'has_repair': node.get('hasRepair'),
-            'paid_daily': node.get('paidDaily'),
-            'is_business': node.get('isBusiness'),
-
+            "has_mortgage": node.get("hasMortgage"),
+            "has_bill_of_sale": node.get("hasBillOfSale"),
+            "has_repair": node.get("hasRepair"),
+            "paid_daily": node.get("paidDaily"),
+            "is_business": node.get("isBusiness"),
             # Promotion status
-            'vipped': node.get('vipped'),
-            'featured': node.get('featured'),
-
+            "vipped": node.get("vipped"),
+            "featured": node.get("featured"),
             # Metadata
-            'updated_at': node.get('updatedAt'),
-            'path': node.get('path'),
-            'photos_count': node.get('photosCount'),
-
+            "updated_at": node.get("updatedAt"),
+            "path": node.get("path"),
+            "photos_count": node.get("photosCount"),
             # Photos URLs
-            'photos': json.dumps([
-                {
-                    'thumbnail': photo.get('thumbnail'),
-                    'f460x345': photo.get('f460x345'),
-                    'large': photo.get('large')
-                }
-                for photo in node.get('photos', [])
-            ]),
-
+            "photos": json.dumps(
+                [
+                    {
+                        "thumbnail": photo.get("thumbnail"),
+                        "f460x345": photo.get("f460x345"),
+                        "large": photo.get("large"),
+                    }
+                    for photo in node.get("photos", [])
+                ]
+            ),
             # Full URL
-            'url': f"https://bina.az{node.get('path')}" if node.get('path') else None,
-            
+            "url": f"https://bina.az{node.get('path')}" if node.get("path") else None,
             # Category (will be filled later)
-            'category': None,
-
+            "category": None,
             # Scraping metadata
-            'scraped_at': datetime.now().isoformat()
+            "scraped_at": datetime.now().isoformat(),
         }
 
         return item
 
     def validate_item(self, item: Dict) -> bool:
         """Validate that item has required fields"""
-        required_fields = ['id', 'scraped_at']
+        required_fields = ["id", "scraped_at"]
         return all(item.get(field) is not None for field in required_fields)
 
     def load_checkpoint(self) -> Optional[Dict]:
@@ -231,9 +256,11 @@ class BinaScraper:
             return None
 
         try:
-            with open(self.checkpoint_file, 'r', encoding='utf-8') as f:
+            with open(self.checkpoint_file, "r", encoding="utf-8") as f:
                 checkpoint = json.load(f)
-            logger.info(f"Loaded checkpoint: {checkpoint['items_count']} items, cursor: {checkpoint.get('cursor', 'None')[:50]}...")
+            logger.info(
+                f"Loaded checkpoint: {checkpoint['items_count']} items, cursor: {checkpoint.get('cursor', 'None')[:50]}..."
+            )
             return checkpoint
         except Exception as e:
             logger.warning(f"Failed to load checkpoint: {e}")
@@ -243,26 +270,32 @@ class BinaScraper:
         """Save checkpoint to file"""
         try:
             checkpoint = {
-                'cursor': cursor,
-                'page_num': page_num,
-                'items_count': len(self.all_items),
-                'total_count': total_count,
-                'timestamp': datetime.now().isoformat()
+                "cursor": cursor,
+                "page_num": page_num,
+                "items_count": len(self.all_items),
+                "total_count": total_count,
+                "timestamp": datetime.now().isoformat(),
             }
-            with open(self.checkpoint_file, 'w', encoding='utf-8') as f:
+            with open(self.checkpoint_file, "w", encoding="utf-8") as f:
                 json.dump(checkpoint, f, ensure_ascii=False, indent=2)
-            logger.debug(f"Checkpoint saved: page {page_num}, {len(self.all_items)} items")
+            logger.debug(
+                f"Checkpoint saved: page {page_num}, {len(self.all_items)} items"
+            )
         except Exception as e:
             logger.error(f"Failed to save checkpoint: {e}")
 
     def save_incremental(self, page_num: int):
         """Save incremental backup of data"""
         try:
-            filename = f"backup_page{page_num}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            filename = (
+                f"backup_page{page_num}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            )
             filepath = self.output_dir / filename
-            with open(filepath, 'w', encoding='utf-8') as f:
+            with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(self.all_items, f, ensure_ascii=False, indent=2)
-            logger.info(f"Incremental backup saved: {filepath} ({len(self.all_items)} items)")
+            logger.info(
+                f"Incremental backup saved: {filepath} ({len(self.all_items)} items)"
+            )
         except Exception as e:
             logger.error(f"Failed to save incremental backup: {e}")
 
@@ -273,18 +306,30 @@ class BinaScraper:
             return None, 0, 0
 
         # Look for the most recent backup file (sort by modification time)
-        backup_files = sorted(self.output_dir.glob("backup_page*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
+        backup_files = sorted(
+            self.output_dir.glob("backup_page*.json"),
+            key=lambda x: x.stat().st_mtime,
+            reverse=True,
+        )
         if backup_files:
             try:
-                with open(backup_files[0], 'r', encoding='utf-8') as f:
+                with open(backup_files[0], "r", encoding="utf-8") as f:
                     self.all_items = json.load(f)
                 # Rebuild seen_ids set
-                self.seen_ids = {item['id'] for item in self.all_items if item.get('id')}
-                logger.info(f"Loaded {len(self.all_items)} items from backup: {backup_files[0].name}")
+                self.seen_ids = {
+                    item["id"] for item in self.all_items if item.get("id")
+                }
+                logger.info(
+                    f"Loaded {len(self.all_items)} items from backup: {backup_files[0].name}"
+                )
             except Exception as e:
                 logger.error(f"Failed to load backup file: {e}")
 
-        return checkpoint.get('cursor'), checkpoint.get('page_num', 0), checkpoint.get('total_count', 0)
+        return (
+            checkpoint.get("cursor"),
+            checkpoint.get("page_num", 0),
+            checkpoint.get("total_count", 0),
+        )
 
     def format_time(self, seconds: float) -> str:
         """Format seconds into human-readable time"""
@@ -318,7 +363,9 @@ class BinaScraper:
             return 0, 0
 
         # Use recent pages for more accurate estimation (last 20 pages)
-        recent_times = self.page_times[-20:] if len(self.page_times) > 20 else self.page_times
+        recent_times = (
+            self.page_times[-20:] if len(self.page_times) > 20 else self.page_times
+        )
         avg_time_per_page = sum(recent_times) / len(recent_times)
 
         pages_remaining = total_pages - current_page
@@ -326,7 +373,14 @@ class BinaScraper:
 
         return estimated_seconds, avg_time_per_page
 
-    def log_progress(self, page_num: int, total_count: int, items_added: int, items_skipped: int, force: bool = False):
+    def log_progress(
+        self,
+        page_num: int,
+        total_count: int,
+        items_added: int,
+        items_skipped: int,
+        force: bool = False,
+    ):
         """Log detailed progress with performance metrics"""
         current_time = time.time()
 
@@ -336,7 +390,9 @@ class BinaScraper:
         progress_pct = (page_num / total_pages * 100) if total_pages > 0 else 0
 
         # Log standard progress every page
-        logger.info(f"Page {page_num}/{total_pages}: +{items_added} items, {items_skipped} skipped | Total: {len(self.all_items)} / {total_count} ({progress_pct:.1f}%)")
+        logger.info(
+            f"Page {page_num}/{total_pages}: +{items_added} items, {items_skipped} skipped | Total: {len(self.all_items)} / {total_count} ({progress_pct:.1f}%)"
+        )
 
         # Log detailed progress every N pages or when forced
         if force or (page_num % self.progress_log_interval == 0 and page_num > 0):
@@ -355,7 +411,7 @@ class BinaScraper:
             # Calculate ETA timestamp
             if eta_seconds > 0:
                 eta_time = datetime.now() + timedelta(seconds=eta_seconds)
-                eta_str = eta_time.strftime('%H:%M:%S')
+                eta_str = eta_time.strftime("%H:%M:%S")
             else:
                 eta_str = "calculating..."
 
@@ -363,7 +419,9 @@ class BinaScraper:
             logger.info("=" * 80)
             logger.info(f"PROGRESS REPORT - Page {page_num}/{total_pages}")
             logger.info("-" * 80)
-            logger.info(f"Progress:        [{progress_pct:5.1f}%] {page_num}/{total_pages} pages")
+            logger.info(
+                f"Progress:        [{progress_pct:5.1f}%] {page_num}/{total_pages} pages"
+            )
             logger.info(f"Items scraped:   {len(self.all_items):,} / {total_count:,}")
             logger.info(f"Pages remaining: {pages_remaining:,}")
             logger.info(f"")
@@ -382,29 +440,31 @@ class BinaScraper:
         """Update aiohttp session with new Cloudflare cookies/UA"""
         if self.session:
             await self.session.close()
-            
+
         self.cookies = cookies
         self.user_agent = user_agent
-        
+
         connector = aiohttp.TCPConnector(ssl=False)
         headers = {
-            'User-Agent': self.user_agent,
-            'Accept': '*/*',
-            'Accept-Language': 'az,en-US;q=0.9,en;q=0.8,ru;q=0.7',
-            'Content-Type': 'application/json',
-            'Referer': 'https://bina.az/alqi-satqi',
-            'Origin': 'https://bina.az',
+            "User-Agent": self.user_agent,
+            "Accept": "*/*",
+            "Accept-Language": "az,en-US;q=0.9,en;q=0.8,ru;q=0.7",
+            "Content-Type": "application/json",
+            "Referer": "https://bina.az/alqi-satqi",
+            "Origin": "https://bina.az",
         }
-        
+
         self.session = aiohttp.ClientSession(
             connector=connector,
             headers=headers,
             cookies=self.cookies,
-            timeout=aiohttp.ClientTimeout(total=45)
+            timeout=aiohttp.ClientTimeout(total=45),
         )
         logger.info("Session updated successfully with new Cloudflare tokens")
 
-    async def fetch_page(self, cursor: Optional[str] = None, attempt: int = 1) -> Optional[Dict]:
+    async def fetch_page(
+        self, cursor: Optional[str] = None, attempt: int = 1
+    ) -> Optional[Dict]:
         """Fetch a single page of results with retry logic and Cloudflare bypass"""
         async with self.semaphore:
             url = self.build_url(cursor)
@@ -412,33 +472,38 @@ class BinaScraper:
             try:
                 # Need to check self.session as it might be recreated during update_session
                 if self.session is None or self.session.closed:
-                     await self.update_session(self.cookies, self.user_agent)
+                    await self.update_session(self.cookies, self.user_agent)
 
                 async with self.session.get(url) as response:
                     if response.status == 200:
                         data = await response.json()
                         return data
-                    
+
                     elif response.status == 403:
-                        logger.warning(f"Cloudflare block detected (403). Launching re-auth...")
+                        logger.warning(
+                            f"Cloudflare block detected (403). Launching re-auth..."
+                        )
                         # Get new session
                         try:
                             # Import here to avoid circular dependencies if any
                             from scraper_utils import get_cloudflare_session
+
                             new_cookies, new_ua = await get_cloudflare_session()
                             if new_cookies:
                                 await self.update_session(new_cookies, new_ua)
                                 # Decrease failure count as this was a block, not a network error
                                 # Retry immediately with new session
                                 if attempt < self.RETRY_ATTEMPTS:
-                                    return await self.fetch_page(cursor, attempt) # Don't increment attempt
+                                    return await self.fetch_page(
+                                        cursor, attempt
+                                    )  # Don't increment attempt
                             else:
                                 logger.error("Bypass failed or cancelled.")
                         except Exception as e:
                             logger.error(f"Error during re-auth: {e}")
-                        
+
                         return None
-                        
+
                     else:
                         logger.warning(f"Request failed with status {response.status}")
 
@@ -467,7 +532,7 @@ class BinaScraper:
         """Fetch and extract category from item detail page"""
         if not item_path:
             return None
-        
+
         try:
             detail_url = f"https://bina.az{item_path}"
             async with self.session.get(detail_url) as response:
@@ -476,7 +541,7 @@ class BinaScraper:
                     return extract_category_from_html(html)
         except Exception as e:
             logger.debug(f"Failed to fetch category for {item_path}: {e}")
-        
+
         return None
 
     async def scrape_all(self) -> List[Dict]:
@@ -488,7 +553,9 @@ class BinaScraper:
         cursor, page_num, total_count = self.load_from_checkpoint()
 
         if cursor:
-            logger.info(f"Resuming from checkpoint: page {page_num}, {len(self.all_items)} items already scraped")
+            logger.info(
+                f"Resuming from checkpoint: page {page_num}, {len(self.all_items)} items already scraped"
+            )
             self.resume_time = time.time()
         else:
             logger.info("Starting fresh scrape...")
@@ -505,12 +572,16 @@ class BinaScraper:
 
                 data = await self.fetch_page(cursor)
 
-                if not data or 'data' not in data or data['data'] is None:
+                if not data or "data" not in data or data["data"] is None:
                     consecutive_failures += 1
-                    logger.error(f"Failed to fetch data or invalid response (failure {consecutive_failures}/{max_consecutive_failures})")
+                    logger.error(
+                        f"Failed to fetch data or invalid response (failure {consecutive_failures}/{max_consecutive_failures})"
+                    )
 
                     if consecutive_failures >= max_consecutive_failures:
-                        logger.error("Max consecutive failures reached. Stopping scraper.")
+                        logger.error(
+                            "Max consecutive failures reached. Stopping scraper."
+                        )
                         self.save_checkpoint(cursor, page_num - 1, total_count)
                         self.save_incremental(page_num - 1)
                         break
@@ -526,7 +597,7 @@ class BinaScraper:
                 # Reset failure counter on success
                 consecutive_failures = 0
 
-                items_connection = data['data'].get('itemsConnection')
+                items_connection = data["data"].get("itemsConnection")
                 if not items_connection:
                     logger.error("No itemsConnection in response")
                     self.save_checkpoint(cursor, page_num, total_count)
@@ -534,11 +605,11 @@ class BinaScraper:
 
                 # Get total count on first page
                 if page_num == 1 or total_count == 0:
-                    total_count = items_connection.get('totalCount', 0)
+                    total_count = items_connection.get("totalCount", 0)
                     logger.info(f"Total items to scrape: {total_count}")
 
                 # Extract items with validation and deduplication
-                edges = items_connection.get('edges', [])
+                edges = items_connection.get("edges", [])
                 if not edges:
                     logger.info("No more items found")
                     break
@@ -547,28 +618,30 @@ class BinaScraper:
                 items_skipped = 0
 
                 for edge in edges:
-                    node = edge.get('node')
+                    node = edge.get("node")
                     if node:
                         item_data = self.extract_item_data(node)
 
                         # Validate item
                         if not self.validate_item(item_data):
-                            logger.warning(f"Invalid item skipped: {item_data.get('id', 'unknown')}")
+                            logger.warning(
+                                f"Invalid item skipped: {item_data.get('id', 'unknown')}"
+                            )
                             items_skipped += 1
                             continue
 
                         # Check for duplicates
-                        item_id = item_data['id']
+                        item_id = item_data["id"]
                         if item_id in self.seen_ids:
                             logger.debug(f"Duplicate item skipped: {item_id}")
                             items_skipped += 1
                             continue
-                        
+
                         # Fetch category from detail page
-                        item_path = node.get('path')
+                        item_path = node.get("path")
                         if item_path:
                             category = await self.fetch_item_category(item_path)
-                            item_data['category'] = category
+                            item_data["category"] = category
 
                         # Add item
                         self.all_items.append(item_data)
@@ -591,15 +664,15 @@ class BinaScraper:
                     self.save_incremental(page_num)
 
                 # Check if there are more pages
-                page_info = items_connection.get('pageInfo', {})
-                has_next_page = page_info.get('hasNextPage', False)
+                page_info = items_connection.get("pageInfo", {})
+                has_next_page = page_info.get("hasNextPage", False)
 
                 if not has_next_page:
                     logger.info("Reached last page")
                     break
 
                 # Get cursor for next page
-                cursor = page_info.get('endCursor')
+                cursor = page_info.get("endCursor")
                 if not cursor:
                     logger.warning("No cursor for next page")
                     break
@@ -631,17 +704,25 @@ class BinaScraper:
         logger.info("=" * 80)
         logger.info(f"Total items scraped:    {len(self.all_items):,}")
         logger.info(f"Unique items:           {len(self.seen_ids):,}")
-        logger.info(f"Duplicates removed:     {len(self.all_items) - len(self.seen_ids):,}")
+        logger.info(
+            f"Duplicates removed:     {len(self.all_items) - len(self.seen_ids):,}"
+        )
         logger.info(f"Total pages processed:  {page_num:,} / {total_pages:,}")
         logger.info(f"")
         logger.info(f"FINAL TIME METRICS")
         logger.info(f"Total time:             {self.format_time_detailed(total_time)}")
-        logger.info(f"Average per page:       {self.format_time(total_time / page_num if page_num > 0 else 0)}")
-        logger.info(f"Average per item:       {self.format_time(total_time / len(self.all_items) if self.all_items else 0)}")
+        logger.info(
+            f"Average per page:       {self.format_time(total_time / page_num if page_num > 0 else 0)}"
+        )
+        logger.info(
+            f"Average per item:       {self.format_time(total_time / len(self.all_items) if self.all_items else 0)}"
+        )
         logger.info(f"")
         logger.info(f"FINAL PERFORMANCE")
         logger.info(f"Pages per minute:       {(page_num / total_time * 60):.1f}")
-        logger.info(f"Items per minute:       {(len(self.all_items) / total_time * 60):.1f}")
+        logger.info(
+            f"Items per minute:       {(len(self.all_items) / total_time * 60):.1f}"
+        )
         logger.info(f"Items per second:       {(len(self.all_items) / total_time):.2f}")
         logger.info("=" * 80 + "\n")
 
@@ -654,7 +735,7 @@ class BinaScraper:
 
         filepath = self.output_dir / filename
 
-        with open(filepath, 'w', encoding='utf-8') as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             json.dump(self.all_items, f, ensure_ascii=False, indent=2)
 
         logger.info(f"Data saved to JSON: {filepath}")
@@ -674,13 +755,33 @@ class BinaScraper:
         # Get all keys from first item
         fieldnames = list(self.all_items[0].keys())
 
-        with open(filepath, 'w', newline='', encoding='utf-8') as f:
+        with open(filepath, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(self.all_items)
 
         logger.info(f"Data saved to CSV: {filepath}")
         return filepath
+
+    def save_to_parquet(self, filename: str = None):
+        """Save data to Parquet file"""
+        if not self.all_items:
+            logger.warning("No data to save")
+            return None
+
+        if filename is None:
+            filename = f"bina_sale_{datetime.now().strftime('%Y%m')}.parquet"
+
+        filepath = self.output_dir / filename
+
+        try:
+            df = pd.DataFrame(self.all_items)
+            df.to_parquet(filepath, index=False, engine="pyarrow")
+            logger.info(f"Data saved to Parquet: {filepath}")
+            return filepath
+        except Exception as e:
+            logger.error(f"Failed to save to Parquet: {e}")
+            return None
 
     def save_to_xlsx(self, filename: str = None):
         """Save data to Excel (XLSX) file"""
@@ -706,7 +807,9 @@ class BinaScraper:
         headers = list(self.all_items[0].keys())
 
         # Style for header row
-        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_fill = PatternFill(
+            start_color="366092", end_color="366092", fill_type="solid"
+        )
         header_font = Font(bold=True, color="FFFFFF")
         header_alignment = Alignment(horizontal="center", vertical="center")
 
@@ -753,44 +856,52 @@ class BinaScraper:
 
         # Calculate statistics
         stats = {
-            'total_items': total,
-            'with_photos': sum(1 for item in self.all_items if item.get('photos_count', 0) > 0),
-            'with_mortgage': sum(1 for item in self.all_items if item.get('has_mortgage')),
-            'with_repair': sum(1 for item in self.all_items if item.get('has_repair')),
-            'vipped': sum(1 for item in self.all_items if item.get('vipped')),
-            'featured': sum(1 for item in self.all_items if item.get('featured')),
-            'business': sum(1 for item in self.all_items if item.get('is_business')),
+            "total_items": total,
+            "with_photos": sum(
+                1 for item in self.all_items if item.get("photos_count", 0) > 0
+            ),
+            "with_mortgage": sum(
+                1 for item in self.all_items if item.get("has_mortgage")
+            ),
+            "with_repair": sum(1 for item in self.all_items if item.get("has_repair")),
+            "vipped": sum(1 for item in self.all_items if item.get("vipped")),
+            "featured": sum(1 for item in self.all_items if item.get("featured")),
+            "business": sum(1 for item in self.all_items if item.get("is_business")),
         }
 
         # Price statistics
-        prices = [item['price_value'] for item in self.all_items if item.get('price_value')]
+        prices = [
+            item["price_value"] for item in self.all_items if item.get("price_value")
+        ]
         if prices:
-            stats['avg_price'] = sum(prices) / len(prices)
-            stats['min_price'] = min(prices)
-            stats['max_price'] = max(prices)
+            stats["avg_price"] = sum(prices) / len(prices)
+            stats["min_price"] = min(prices)
+            stats["max_price"] = max(prices)
 
         # Area statistics
-        areas = [item['area_value'] for item in self.all_items if item.get('area_value')]
+        areas = [
+            item["area_value"] for item in self.all_items if item.get("area_value")
+        ]
         if areas:
-            stats['avg_area'] = sum(areas) / len(areas)
-            stats['min_area'] = min(areas)
-            stats['max_area'] = max(areas)
+            stats["avg_area"] = sum(areas) / len(areas)
+            stats["min_area"] = min(areas)
+            stats["max_area"] = max(areas)
 
         # City distribution
         cities = {}
         for item in self.all_items:
-            city = item.get('city_name')
+            city = item.get("city_name")
             if city:
                 cities[city] = cities.get(city, 0) + 1
-        stats['cities'] = cities
+        stats["cities"] = cities
 
         # Room distribution
         rooms = {}
         for item in self.all_items:
-            room = item.get('rooms')
+            room = item.get("rooms")
             if room:
                 rooms[str(room)] = rooms.get(str(room), 0) + 1
-        stats['rooms_distribution'] = rooms
+        stats["rooms_distribution"] = rooms
 
         return stats
 
@@ -811,19 +922,37 @@ class BinaScraper:
             return {}
 
         report = {
-            'total_items': len(self.all_items),
-            'unique_items': len(self.seen_ids),
-            'duplicates_removed': len(self.all_items) - len(self.seen_ids),
-            'items_with_missing_price': sum(1 for item in self.all_items if not item.get('price_value')),
-            'items_with_missing_location': sum(1 for item in self.all_items if not item.get('location_name')),
-            'items_with_missing_area': sum(1 for item in self.all_items if not item.get('area_value')),
-            'items_with_photos': sum(1 for item in self.all_items if item.get('photos_count', 0) > 0),
-            'data_completeness': {
-                'id': sum(1 for item in self.all_items if item.get('id')) / len(self.all_items) * 100,
-                'price': sum(1 for item in self.all_items if item.get('price_value')) / len(self.all_items) * 100,
-                'location': sum(1 for item in self.all_items if item.get('location_name')) / len(self.all_items) * 100,
-                'area': sum(1 for item in self.all_items if item.get('area_value')) / len(self.all_items) * 100,
-            }
+            "total_items": len(self.all_items),
+            "unique_items": len(self.seen_ids),
+            "duplicates_removed": len(self.all_items) - len(self.seen_ids),
+            "items_with_missing_price": sum(
+                1 for item in self.all_items if not item.get("price_value")
+            ),
+            "items_with_missing_location": sum(
+                1 for item in self.all_items if not item.get("location_name")
+            ),
+            "items_with_missing_area": sum(
+                1 for item in self.all_items if not item.get("area_value")
+            ),
+            "items_with_photos": sum(
+                1 for item in self.all_items if item.get("photos_count", 0) > 0
+            ),
+            "data_completeness": {
+                "id": sum(1 for item in self.all_items if item.get("id"))
+                / len(self.all_items)
+                * 100,
+                "price": sum(1 for item in self.all_items if item.get("price_value"))
+                / len(self.all_items)
+                * 100,
+                "location": sum(
+                    1 for item in self.all_items if item.get("location_name")
+                )
+                / len(self.all_items)
+                * 100,
+                "area": sum(1 for item in self.all_items if item.get("area_value"))
+                / len(self.all_items)
+                * 100,
+            },
         }
         return report
 
@@ -842,10 +971,11 @@ async def main():
             # Cleanup old backups
             scraper.cleanup_backups(keep_last=3)
 
-            # Save to JSON, CSV, and XLSX formats
+            # Save to JSON, CSV, XLSX and Parquet formats
             json_file = scraper.save_to_json()
             csv_file = scraper.save_to_csv()
             xlsx_file = scraper.save_to_xlsx()
+            parquet_file = scraper.save_to_parquet()
 
             # Print data integrity report
             integrity = scraper.get_data_integrity_report()
@@ -856,13 +986,19 @@ async def main():
             logger.info(f"Unique items: {integrity.get('unique_items', 0)}")
             logger.info(f"Duplicates removed: {integrity.get('duplicates_removed', 0)}")
             logger.info(f"\nData Completeness:")
-            for field, completeness in integrity.get('data_completeness', {}).items():
+            for field, completeness in integrity.get("data_completeness", {}).items():
                 logger.info(f"  {field}: {completeness:.1f}%")
             logger.info(f"\nData Quality:")
             logger.info(f"  Items with photos: {integrity.get('items_with_photos', 0)}")
-            logger.info(f"  Missing price: {integrity.get('items_with_missing_price', 0)}")
-            logger.info(f"  Missing location: {integrity.get('items_with_missing_location', 0)}")
-            logger.info(f"  Missing area: {integrity.get('items_with_missing_area', 0)}")
+            logger.info(
+                f"  Missing price: {integrity.get('items_with_missing_price', 0)}"
+            )
+            logger.info(
+                f"  Missing location: {integrity.get('items_with_missing_location', 0)}"
+            )
+            logger.info(
+                f"  Missing area: {integrity.get('items_with_missing_area', 0)}"
+            )
 
             # Print statistics
             stats = scraper.get_statistics()
@@ -877,21 +1013,26 @@ async def main():
             logger.info(f"Featured items: {stats.get('featured', 0)}")
             logger.info(f"Business listings: {stats.get('business', 0)}")
 
-            if 'avg_price' in stats:
-                logger.info(f"\nPrice range: {stats['min_price']:,.0f} - {stats['max_price']:,.0f} AZN")
+            if "avg_price" in stats:
+                logger.info(
+                    f"\nPrice range: {stats['min_price']:,.0f} - {stats['max_price']:,.0f} AZN"
+                )
                 logger.info(f"Average price: {stats['avg_price']:,.0f} AZN")
 
-            if 'avg_area' in stats:
-                logger.info(f"\nArea range: {stats['min_area']:.1f} - {stats['max_area']:.1f} m2")
+            if "avg_area" in stats:
+                logger.info(
+                    f"\nArea range: {stats['min_area']:.1f} - {stats['max_area']:.1f} m2"
+                )
                 logger.info(f"Average area: {stats['avg_area']:.1f} m2")
 
             logger.info("\nTop cities:")
-            for city, count in sorted(stats.get('cities', {}).items(),
-                                     key=lambda x: x[1], reverse=True)[:10]:
+            for city, count in sorted(
+                stats.get("cities", {}).items(), key=lambda x: x[1], reverse=True
+            )[:10]:
                 logger.info(f"  {city}: {count} listings")
 
             logger.info("\nRoom distribution:")
-            for rooms, count in sorted(stats.get('rooms_distribution', {}).items()):
+            for rooms, count in sorted(stats.get("rooms_distribution", {}).items()):
                 logger.info(f"  {rooms} rooms: {count} listings")
 
             logger.info("=" * 80)
@@ -900,6 +1041,8 @@ async def main():
             logger.info(f"  CSV: {csv_file}")
             if xlsx_file:
                 logger.info(f"  XLSX: {xlsx_file}")
+            if parquet_file:
+                logger.info(f"  Parquet: {parquet_file}")
             logger.info("=" * 80)
         else:
             logger.error("No items scraped!")
